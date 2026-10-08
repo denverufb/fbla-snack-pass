@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FBLA Snack Pass</title>
+<style>
+:root{--n:#17365D;--b:#2F75B5;--bg:#F4F7FB;--m:#6B7280;--bd:#D9E1EC}
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:Arial,sans-serif;background:var(--bg)}
+header{height:64px;background:var(--n);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+h1{font-size:22px;margin:0}button{border:0;border-radius:9px;padding:9px 12px;font-weight:700;cursor:pointer}
+#setup{max-width:700px;margin:48px auto;background:#fff;border:1px solid var(--bd);border-radius:16px;padding:24px}
+#setup h2{margin-top:0;color:var(--n)}p,.note{color:var(--m);line-height:1.5}
+label{display:block;font-weight:700;margin:16px 0 7px}input{width:100%;padding:13px;border:1px solid var(--bd);border-radius:10px;font-size:16px}
+.primary{margin-top:14px;background:var(--b);color:#fff}iframe{width:100%;height:calc(100vh - 64px);border:0;display:none;background:#fff}.note{font-size:13px;margin-top:12px}
+</style>
+</head>
+<body>
+<header><h1>FBLA Snack Pass</h1><button onclick="settings()">Settings</button></header>
+<div id="setup">
+<h2>Connect Google Sheets</h2>
+<p>Paste the Google Apps Script web app URL connected to the FBLA Snack Pass Google Sheet. This is saved only on this device.</p>
+<label>Apps Script Web App URL</label>
+<input id="url" placeholder="https://script.google.com/macros/s/.../exec">
+<button class="primary" onclick="save()">Connect</button>
+<div class="note">Student names, ID barcodes, balances and transactions stay in Google Sheets, not in this GitHub repository.</div>
+</div>
+<iframe id="app" title="FBLA Snack Pass"></iframe>
+<script>
+const K='fblaSnackPass.appsScriptUrl';
+function valid(v){try{let u=new URL(v);return u.protocol==='https:'&&(u.hostname==='script.google.com'||u.hostname.endsWith('.googleusercontent.com'))}catch(e){return false}}
+function save(){let v=url.value.trim();if(!valid(v))return alert('Paste a valid Google Apps Script /exec URL.');localStorage.setItem(K,v);load()}
+function load(){let v=localStorage.getItem(K);if(!v){setup.style.display='block';app.style.display='none';return}url.value=v;app.src=v;setup.style.display='none';app.style.display='block'}
+function settings(){setup.style.display='block';app.style.display='none';url.value=localStorage.getItem(K)||''}
+load();
+</script>
+</body></html>
