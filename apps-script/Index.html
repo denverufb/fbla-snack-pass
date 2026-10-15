@@ -197,6 +197,17 @@
       }).dashboard();
     }
 
+    function updateDashboardAfterCheckout(points) {
+      const sales = Number(E('c').textContent);
+      const outstanding = Number(E('b').textContent);
+      if (Number.isFinite(sales) && Number.isFinite(outstanding)) {
+        E('c').textContent = sales + 1;
+        E('b').textContent = outstanding - Number(points);
+      } else {
+        refreshDashboard();
+      }
+    }
+
     function findStudent() {
       const barcode = E('cs').value.trim();
       if (!barcode) return;
@@ -229,8 +240,8 @@
           E('pc').textContent = 'Cost: ' + result.points;
           E('cb').textContent = 'Balance: ' + result.balance;
           message('co', 'APPROVED • ' + result.snack + ' • New balance: ' + result.balance, 'good');
-          refreshDashboard();
-          setTimeout(resetCheckout, 900);
+          updateDashboardAfterCheckout(result.points);
+          setTimeout(resetCheckout, 350);
         })
         .withFailureHandler(error => {
           errorMessage('co', error);
