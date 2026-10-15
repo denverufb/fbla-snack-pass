@@ -200,19 +200,25 @@ function setStudentActive(data) {
 
 function loadPoints(data) {
   setup_();
-  const barcode = normalize_(data.barcode);
-  const points = positiveWholeNumber_(data.points, 'Points');
-  const paid = data.paid === '' ? 0 : Number(data.paid);
-  const staff = normalize_(data.staff);
-  const student = student_(barcode);
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(5000);
+  try {
+    const barcode = normalize_(data.barcode);
+    const points = positiveWholeNumber_(data.points, 'Points');
+    const paid = data.paid === '' ? 0 : Number(data.paid);
+    const staff = normalize_(data.staff);
+    const student = student_(barcode);
 
-  if (!student) throw Error('Student not found.');
-  if (!student.active) throw Error('Student account is inactive. Reactivate it before adding points.');
-  if (!Number.isFinite(paid) || paid < 0) throw Error('Amount paid cannot be negative.');
+    if (!student) throw Error('Student not found.');
+    if (!student.active) throw Error('Student account is inactive. Reactivate it before adding points.');
+    if (!Number.isFinite(paid) || paid < 0) throw Error('Amount paid cannot be negative.');
 
-  SpreadsheetApp.getActive().getSheetByName(S.RELOADS)
-    .appendRow([new Date(), barcode, student.name, points, paid, staff]);
-  return {message: 'Added ' + points + ' points to ' + student.name + '.', balance: balance_(barcode)};
+    SpreadsheetApp.getActive().getSheetByName(S.RELOADS)
+      .appendRow([new Date(), barcode, student.name, points, paid, staff]);
+    return {message: 'Added ' + points + ' points to ' + student.name + '.', balance: balance_(barcode)};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function subtractPoints(data) {
