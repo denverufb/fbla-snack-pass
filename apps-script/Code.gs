@@ -41,19 +41,36 @@ function normalize_(value) {
   return String(value == null ? '' : value).trim();
 }
 
-function rows_(name) {
-  setup_();
-  const sheet = SpreadsheetApp.getActive().getSheetByName(name);
-  return sheet.getLastRow() < 2
+function sheetRows_(sheet) {
+  const lastRow = sheet.getLastRow();
+  return lastRow < 2
     ? []
-    : sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+    : sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getDisplayValues();
 }
 
-function student_(barcode) {
+function rows_(name) {
+  setup_();
+  return sheetRows_(SpreadsheetApp.getActive().getSheetByName(name));
+}
+
+// Load all data needed by a request once. Reusing this snapshot avoids the
+// repeated full-sheet reads that made scans slow as history grew.
+function snapshot_() {
+  setup_();
+  const ss = SpreadsheetApp.getActive();
+  return {
+    students: sheetRows_(ss.getSheetByName(S.STUDENTS)),
+    snacks: sheetRows_(ss.getSheetByName(S.SNACKS)),
+    reloads: sheetRows_(ss.getSheetByName(S.RELOADS)),
+    transactions: sheetRows_(ss.getSheetByName(S.TX)),
+    adjustments: sheetRows_(ss.getSheetByName(S.ADJUSTMENTS))
+  };
+}
+
+function studentFrom_(data, barcode) {
   const wanted = normalize_(barcode);
-  const rows = rows_(S.STUDENTS);
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  for (let i = 0; i < data.students.length; i++) {
+    const row = data.students[i];
     if (normalize_(row[0]) === wanted) {
       return {
         row: i + 2,
@@ -68,11 +85,10 @@ function student_(barcode) {
   return null;
 }
 
-function snack_(barcode) {
+function snackFrom_(data, barcode) {
   const wanted = normalize_(barcode);
-  const rows = rows_(S.SNACKS);
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  for (let i = 0; i < data.snacks.length; i++) {
+    const row = data.snacks[i];
     if (normalize_(row[0]) === wanted) {
       return {
         barcode: row[0],
@@ -87,37 +103,42 @@ function snack_(barcode) {
   return null;
 }
 
-function balance_(barcode) {
-  const student = student_(barcode);
-  if (!student) return null;
+function balanceMap_(data) {
+  const balances = Object.create(null);
 
-  let reloads = 0;
-  let purchases = 0;
-  let adjustments = 0;
-  const wanted = normalize_(barcode);
+  data.students.forEach(row => {
+    const barcode = normalize_(row[0]);
+    if (barcode) balances[barcode] = Number(row[3]) || 0;
+  });
+  data.reloads.forEach(row => {
+    const barcode = normalize_(row[1]);
+    if (barcode in balances) balances[barcode] += Number(row[3]) || 0;
+  });
+  data.adjustments.forEach(row => {
+    const barcode = normalize_(row[1]);
+    if (barcode in balances) balances[barcode] += Number(row[3]) || 0;
+  });
+  data.transactions.forEach(row => {
+    const barcode = normalize_(row[1]);
+    if (barcode in balances) balances[barcode] -= Number(row[5]) || 0;
+  });
 
-  rows_(S.RELOADS).forEach(row => {
-    if (normalize_(row[1]) === wanted) reloads += Number(row[3]) || 0;
-  });
-  rows_(S.TX).forEach(row => {
-    if (normalize_(row[1]) === wanted) purchases += Number(row[5]) || 0;
-  });
-  rows_(S.ADJUSTMENTS).forEach(row => {
-    if (normalize_(row[1]) === wanted) adjustments += Number(row[3]) || 0;
-  });
-
-  return student.opening + reloads + adjustments - purchases;
+  return balances;
 }
 
-function remaining_(barcode) {
-  const snack = snack_(barcode);
-  if (!snack || snack.qty === null) return null;
-  let sold = 0;
-  const wanted = normalize_(barcode);
-  rows_(S.TX).forEach(row => {
-    if (normalize_(row[3]) === wanted) sold++;
+function inventoryMap_(data) {
+  const remaining = Object.create(null);
+
+  data.snacks.forEach(row => {
+    const barcode = normalize_(row[0]);
+    if (barcode) remaining[barcode] = row[4] === '' ? null : Number(row[4]);
   });
-  return snack.qty - sold;
+  data.transactions.forEach(row => {
+    const barcode = normalize_(row[3]);
+    if (barcode in remaining && remaining[barcode] !== null) remaining[barcode]--;
+  });
+
+  return remaining;
 }
 
 function positiveWholeNumber_(value, label) {
@@ -137,34 +158,43 @@ function nonnegativeWholeNumber_(value, label) {
 }
 
 function lookupStudent(barcode) {
-  const student = student_(barcode);
+  const data = snapshot_();
+  const student = studentFrom_(data, barcode);
   if (!student) return {ok: false, message: 'Student not found.'};
   if (!student.active) return {ok: false, message: 'Student account is inactive.'};
+  const balances = balanceMap_(data);
   return {
     ok: true,
     student: {
       barcode: student.barcode,
       name: student.name,
       grade: student.grade,
-      balance: balance_(barcode)
+      balance: balances[normalize_(student.barcode)]
     }
   };
 }
 
 function addStudent(data) {
   setup_();
-  const barcode = normalize_(data.barcode);
-  const name = normalize_(data.name);
-  const grade = normalize_(data.grade);
-  const opening = nonnegativeWholeNumber_(data.opening === '' ? 0 : data.opening, 'Starting points');
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(5000);
+  try {
+    const snapshot = snapshot_();
+    const barcode = normalize_(data.barcode);
+    const name = normalize_(data.name);
+    const grade = normalize_(data.grade);
+    const opening = nonnegativeWholeNumber_(data.opening === '' ? 0 : data.opening, 'Starting points');
 
-  if (!barcode) throw Error('Scan the student ID first.');
-  if (!name) throw Error('Enter the student name.');
-  if (student_(barcode)) throw Error('That barcode is already assigned. Reactivate the existing account if needed.');
+    if (!barcode) throw Error('Scan the student ID first.');
+    if (!name) throw Error('Enter the student name.');
+    if (studentFrom_(snapshot, barcode)) throw Error('That barcode is already assigned. Reactivate the existing account if needed.');
 
-  SpreadsheetApp.getActive().getSheetByName(S.STUDENTS)
-    .appendRow([barcode, name, grade, opening, 'Yes', new Date()]);
-  return {message: name + ' added with ' + opening + ' points.'};
+    SpreadsheetApp.getActive().getSheetByName(S.STUDENTS)
+      .appendRow([barcode, name, grade, opening, 'Yes', new Date()]);
+    return {message: name + ' added with ' + opening + ' points.'};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function setStudentActive(data) {
@@ -172,11 +202,12 @@ function setStudentActive(data) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(5000);
   try {
+    const snapshot = snapshot_();
     const barcode = normalize_(data.barcode);
     const active = data.active === true || String(data.active).toLowerCase() === 'true';
     const reason = normalize_(data.reason) || (active ? 'Account reactivated' : 'Account deactivated');
     const staff = normalize_(data.staff);
-    const student = student_(barcode);
+    const student = studentFrom_(snapshot, barcode);
 
     if (!student) throw Error('Student not found.');
     if (student.active === active) {
@@ -203,19 +234,21 @@ function loadPoints(data) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(5000);
   try {
+    const snapshot = snapshot_();
     const barcode = normalize_(data.barcode);
     const points = positiveWholeNumber_(data.points, 'Points');
     const paid = data.paid === '' ? 0 : Number(data.paid);
     const staff = normalize_(data.staff);
-    const student = student_(barcode);
+    const student = studentFrom_(snapshot, barcode);
 
     if (!student) throw Error('Student not found.');
     if (!student.active) throw Error('Student account is inactive. Reactivate it before adding points.');
     if (!Number.isFinite(paid) || paid < 0) throw Error('Amount paid cannot be negative.');
 
+    const before = balanceMap_(snapshot)[normalize_(barcode)];
     SpreadsheetApp.getActive().getSheetByName(S.RELOADS)
       .appendRow([new Date(), barcode, student.name, points, paid, staff]);
-    return {message: 'Added ' + points + ' points to ' + student.name + '.', balance: balance_(barcode)};
+    return {message: 'Added ' + points + ' points to ' + student.name + '.', balance: before + points};
   } finally {
     lock.releaseLock();
   }
@@ -226,16 +259,17 @@ function subtractPoints(data) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(5000);
   try {
+    const snapshot = snapshot_();
     const barcode = normalize_(data.barcode);
     const points = positiveWholeNumber_(data.points, 'Points to subtract');
     const reason = normalize_(data.reason) || 'Manual point correction';
     const staff = normalize_(data.staff);
-    const student = student_(barcode);
+    const student = studentFrom_(snapshot, barcode);
 
     if (!student) throw Error('Student not found.');
     if (!student.active) throw Error('Student account is inactive. Reactivate it before changing points.');
 
-    const before = balance_(barcode);
+    const before = balanceMap_(snapshot)[normalize_(barcode)];
     if (before < 0) throw Error(student.name + ' already has an invalid negative balance. Correct the sheet before continuing.');
     if (points > before) {
       throw Error('Cannot subtract ' + points + ' points. ' + student.name + ' only has ' + before + '.');
@@ -252,20 +286,27 @@ function subtractPoints(data) {
 
 function addSnack(data) {
   setup_();
-  const barcode = normalize_(data.barcode);
-  const name = normalize_(data.name);
-  const points = positiveWholeNumber_(data.points, 'Point cost');
-  const cost = data.cost === '' ? '' : Number(data.cost);
-  const qty = data.qty === '' ? '' : nonnegativeWholeNumber_(data.qty, 'Starting quantity');
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(5000);
+  try {
+    const snapshot = snapshot_();
+    const barcode = normalize_(data.barcode);
+    const name = normalize_(data.name);
+    const points = positiveWholeNumber_(data.points, 'Point cost');
+    const cost = data.cost === '' ? '' : Number(data.cost);
+    const qty = data.qty === '' ? '' : nonnegativeWholeNumber_(data.qty, 'Starting quantity');
 
-  if (!barcode) throw Error('Scan the snack barcode first.');
-  if (!name) throw Error('Enter the snack name.');
-  if (cost !== '' && (!Number.isFinite(cost) || cost < 0)) throw Error('Unit cost cannot be negative.');
-  if (snack_(barcode)) throw Error('That snack barcode is already registered.');
+    if (!barcode) throw Error('Scan the snack barcode first.');
+    if (!name) throw Error('Enter the snack name.');
+    if (cost !== '' && (!Number.isFinite(cost) || cost < 0)) throw Error('Unit cost cannot be negative.');
+    if (snackFrom_(snapshot, barcode)) throw Error('That snack barcode is already registered.');
 
-  SpreadsheetApp.getActive().getSheetByName(S.SNACKS)
-    .appendRow([barcode, name, points, cost, qty, 'Yes', new Date()]);
-  return {message: name + ' registered for ' + points + ' point' + (points === 1 ? '' : 's') + '.'};
+    SpreadsheetApp.getActive().getSheetByName(S.SNACKS)
+      .appendRow([barcode, name, points, cost, qty, 'Yes', new Date()]);
+    return {message: name + ' registered for ' + points + ' point' + (points === 1 ? '' : 's') + '.'};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function checkout(data) {
@@ -273,19 +314,20 @@ function checkout(data) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(5000);
   try {
+    const snapshot = snapshot_();
     const studentBarcode = normalize_(data.studentBarcode);
     const snackBarcode = normalize_(data.snackBarcode);
     const staff = normalize_(data.staff);
-    const student = student_(studentBarcode);
-    const snack = snack_(snackBarcode);
+    const student = studentFrom_(snapshot, studentBarcode);
+    const snack = snackFrom_(snapshot, snackBarcode);
 
     if (!student) throw Error('Student not found.');
     if (!student.active) throw Error('Student account is inactive.');
     if (!snack) throw Error('Snack not found.');
     if (!snack.active) throw Error('Snack is inactive.');
 
-    const before = balance_(studentBarcode);
-    const remaining = remaining_(snackBarcode);
+    const before = balanceMap_(snapshot)[normalize_(studentBarcode)];
+    const remaining = inventoryMap_(snapshot)[normalize_(snackBarcode)];
     if (remaining !== null && remaining <= 0) throw Error(snack.name + ' is out of stock.');
     if (before < snack.points) throw Error(student.name + ' only has ' + before + ' points.');
 
@@ -299,31 +341,43 @@ function checkout(data) {
 }
 
 function dashboard() {
-  const students = rows_(S.STUDENTS).filter(row => normalize_(row[0]));
-  const snacks = rows_(S.SNACKS).filter(row => normalize_(row[0]));
-  const transactions = rows_(S.TX);
+  const data = snapshot_();
+  const balances = balanceMap_(data);
   let outstanding = 0;
-  students.forEach(row => { outstanding += balance_(row[0]) || 0; });
-  const activeStudents = students.filter(row => String(row[4]).toLowerCase() !== 'no').length;
-  return {students: activeStudents, snacks: snacks.length, sales: transactions.length, points: outstanding};
+  data.students.forEach(row => {
+    const barcode = normalize_(row[0]);
+    if (barcode) outstanding += balances[barcode] || 0;
+  });
+  const activeStudents = data.students.filter(row => normalize_(row[0]) && String(row[4]).toLowerCase() !== 'no').length;
+  const snacks = data.snacks.filter(row => normalize_(row[0])).length;
+  return {students: activeStudents, snacks: snacks, sales: data.transactions.length, points: outstanding};
 }
 
 function getStudents() {
-  return rows_(S.STUDENTS)
+  const data = snapshot_();
+  const balances = balanceMap_(data);
+  return data.students
     .filter(row => normalize_(row[0]))
     .map(row => ({
       barcode: row[0],
       name: row[1],
       grade: row[2],
-      balance: balance_(row[0]),
+      balance: balances[normalize_(row[0])],
       active: String(row[4]).toLowerCase() !== 'no'
     }));
 }
 
 function getSnacks() {
-  return rows_(S.SNACKS)
+  const data = snapshot_();
+  const remaining = inventoryMap_(data);
+  return data.snacks
     .filter(row => normalize_(row[0]))
-    .map(row => ({barcode: row[0], name: row[1], points: Number(row[2]) || 0, remaining: remaining_(row[0])}));
+    .map(row => ({
+      barcode: row[0],
+      name: row[1],
+      points: Number(row[2]) || 0,
+      remaining: remaining[normalize_(row[0])]
+    }));
 }
 
 function getSales() {
